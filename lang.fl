@@ -1,0 +1,424 @@
+/* lang.flex */
+
+%{
+#line 4 "lang.flex"
+
+#ifndef __LANG_FLEX
+#define __LANG_FLEX
+
+#define YY_NO_INPUT
+
+#include <stdio.h>
+#include <string.h>
+#include "parse_tree.h"
+#include "memstat.h"
+#include "lang_bison.h"
+
+/* Gestisce la memorizzazione delle linee del file sorgente e la ricostruzione   */
+/* in memoria di ciascuna di esse.                                               */
+/* P_line: indirizzo della struttura "line"                                      */
+/* yytext: vettore che contiene il token                                         */
+/* yyleng: numero di caratteri del token                                         */
+/* Il primo test e` vero quando l'indice delle linea attuale supera il numero di */
+/* elementi del vettore delle linee => resize dinamico                           */
+/* Il secondo test e` vero quando la linea attuale e` vuota nell'accezione dei   */
+/* vettori: assolutamente priva di elementi => viene inserito un carattere, in   */
+/* modo da poterla vedere come "stringa vuota", dotata del carattere '\0'        */
+/* Il terzo test e` vero quando la linea attuale non ha abbastanza caratteri per */
+/* contenere il nuovo token => viene allungata dinamicamente della quantita`     */
+/* necessaria                                                                    */
+#define TOK_CAT( P_line, yytext, yyleng ) do { \
+  if((P_line)->ln >= (P_line)->lm ) { \
+    (P_line)->lm = (P_line)->ln + 1; \
+    (P_line)->lv = (char **)msRealloc((P_line)->lv, sizeof( char * ) * (P_line)->lm, __FILE__, __LINE__ ); \
+  } \
+  if((P_line)->m == 0 ) { \
+    ((P_line)->lv)[(P_line)->ln] = (char *)msCalloc( 1, sizeof( char ), __FILE__, __LINE__ ); \
+    (P_line)->m = 1; \
+  } \
+  if((P_line)->n + (yyleng) >= (P_line)->m ) { \
+    (P_line)->m = (P_line)->n + (yyleng) + 1; \
+    ((P_line)->lv)[(P_line)->ln] = (char *)msRealloc(((P_line)->lv)[(P_line)->ln], sizeof( char ) * (P_line)->m, __FILE__, __LINE__ ); \
+  } \
+  strncpy(((P_line)->lv)[(P_line)->ln] + (P_line)->n, (yytext), (yyleng) + 1 ); \
+  (P_line)->n += (yyleng); \
+} while(0)
+
+
+#define LD_K 1 /* usate in F_RETURN per discrimonare se il token in questione e` */
+#define LD_V 0 /* una keyword o un valore                                        */
+
+/* inizializza e restituisce il descrittore di token che yylex() restituisce a   */
+/* yyparse(). Quando yytext contiene una Keyword, viene salvata in posizione     */
+/* CODE (cioè yylval.tok.id) di MySymTab e la stringa associata alla keyword e`  */
+/* gia` MySymTab[(CODE)]                                                         */
+#define F_RETURN( CODE, P_line, yytext, yyleng, TYPE ) do { \
+  yylval.tok.id = (CODE); \
+  yylval.tok.lnum = (P_line)->ln; \
+  yylval.tok.cnum = (P_line)->n; \
+  TOK_CAT(P_line, yytext, yyleng ); \
+  if( TYPE == LD_K && MySymTab[(CODE)] == NULL ) \
+    MySymTab[CODE] = myStrdup( yytext, yyleng ); \
+  yylval.tok.text = ( TYPE == LD_K ) ? MySymTab[(CODE)] : (yytext); \
+  yylval.tok.leng = (yyleng); \
+  return (CODE); \
+ } while(0)
+
+
+/* contiene le linee del sorgente, ricostruite via via che viene scannerizzato */
+/* ciascuna linea e` un vettore dinamico di caratteri                          */
+/* le linee sono memorizzate mediante vettore dinamico di linee                */
+/*                                                                             */
+/* lv: vettore dinamico delle linee                                            */
+/* ln: indice, in lv, della linea che si sta scannerizzando dal file sorgente  */
+/*     (e ricostruendo in memoria)                                             */
+/* lm: numero massimo di linee memorizzabili in lv                             */
+/* n:  indice, nella linea corrente (lv[ln]) del carattere a partire dal quale */
+/*     inserire il prossimo token                                              */
+/* m:  numero massimo di caratteri della linea corrente                        */
+/*                                                                             */
+/* la linea corrente, cosi` come il vettore delle linee, vengono incrementati  */
+/* dinamicamente dalla TOK_CAT(...)                                            */
+/*                                                                             */
+/* Tale struttura e` modificata dalla TOK_CAT(...) e quando yylex() incontra   */
+/* '\n': in tale caso bisogna gestire il passaggio alla linea successiva ag-   */
+/* giornando opportunamente i vari contatori                                   */
+struct {
+  int     n;  /* indice primo carattere libero nella linea corrente (di indice ln) */
+  int     m;  /* numero massimo di caratteri della linea corrente */
+  char **lv;  /* puntatore al vettore delle linee memorizzate */
+  int    ln;  /* numero della linea nel file sorgente (decr. di 1)*/
+  int    lm;  /* numero massimo di linee memorizzabili */
+} line = {0, 0, NULL, 0, 0};
+
+%}
+
+nl              \r|\n|\r\n
+
+MAC_ADDRESS     ([0-9a-fA-F]{1,2}":"){5}([0-9a-fA-F]{1,2})
+
+IP_ADDRESS      ((([0-9]{1,2})|(1[0-9]{2})|(2[0-4][0-9])|(25[0-5]))\.){3}(([0-9]{1,2})|(1[0-9]{2})|(2[0-4][0-9])|(25[0-5]))
+
+IDENTIFIER      [_a-zA-Z][a-zA-Z0-9_\-]*
+
+TLD_IDENTIFIER  [~][_a-zA-Z][a-zA-Z0-9_\-]*
+
+EXT_IDENTIFIER  [_a-zA-Z][a-zA-Z0-9_\-]*\+
+
+NET_IDENTIFIER  [_a-zA-Z][a-zA-Z0-9_\-\.]*
+
+INTEGER         [0-9]+
+
+HEX             "-"?"0"[xX][0-9a-fA-F]+
+
+
+%x comment
+/* %option debug */
+
+%option noyywrap
+%option never-interactive
+%option nounput
+/* %option yylineno */
+
+%%
+        /* symbols */
+":"                      F_RETURN(':', &line, yytext, yyleng, LD_K);
+"*"                      F_RETURN('*', &line, yytext, yyleng, LD_K);
+"-"                      F_RETURN('-', &line, yytext, yyleng, LD_K);
+"["                      F_RETURN('[', &line, yytext, yyleng, LD_K);
+"]"                      F_RETURN(']', &line, yytext, yyleng, LD_K);
+"/"                      F_RETURN('/', &line, yytext, yyleng, LD_K);
+"!"                      F_RETURN('!', &line, yytext, yyleng, LD_K);
+","                      F_RETURN(',', &line, yytext, yyleng, LD_K);
+
+
+        /* table names */
+"filter"                 F_RETURN(filter, &line, yytext, yyleng, LD_K);
+"mangle"                 F_RETURN(mangle, &line, yytext, yyleng, LD_K);
+"nat"                    F_RETURN(nat, &line, yytext, yyleng, LD_K);
+"raw"                    F_RETURN(raw, &line, yytext, yyleng, LD_K);
+"security"               F_RETURN(security, &line, yytext, yyleng, LD_K);
+
+
+        /*  table closing keyword */
+"COMMIT"                 F_RETURN(COMMIT, &line, yytext, yyleng, LD_K);
+
+
+
+        /* rule commands */
+"-A"                     F_RETURN(APPEND, &line, yytext, yyleng, LD_K);
+"--append"               F_RETURN(APPEND, &line, yytext, yyleng, LD_K);
+"-D"                     F_RETURN(DEL, &line, yytext, yyleng, LD_K);
+"--delete"               F_RETURN(DEL, &line, yytext, yyleng, LD_K);
+"-E"                     F_RETURN(REN, &line, yytext, yyleng, LD_K);
+"--rename-chain"         F_RETURN(REN, &line, yytext, yyleng, LD_K);
+"-F"                     F_RETURN(FLUSH, &line, yytext, yyleng, LD_K);
+"--flush"                F_RETURN(FLUSH, &line, yytext, yyleng, LD_K);
+"-I"                     F_RETURN(INS, &line, yytext, yyleng, LD_K);
+"--insert"               F_RETURN(INS, &line, yytext, yyleng, LD_K);
+"-N"                     F_RETURN(NEW_CHAIN, &line, yytext, yyleng, LD_K);
+"--new-chain"            F_RETURN(NEW_CHAIN, &line, yytext, yyleng, LD_K);
+"-P"                     F_RETURN(POLICY_SET, &line, yytext, yyleng, LD_K);
+"--policy"               F_RETURN(POLICY_SET, &line, yytext, yyleng, LD_K);
+"-R"                     F_RETURN(REPLACE, &line, yytext, yyleng, LD_K);
+"--replace"              F_RETURN(REPLACE, &line, yytext, yyleng, LD_K);
+"-X"                     F_RETURN(CLEAR_EMPTY, &line, yytext, yyleng, LD_K);
+"--delete-chain"         F_RETURN(CLEAR_EMPTY, &line, yytext, yyleng, LD_K);
+"-Z"                     F_RETURN(ZERO_COUNTER, &line, yytext, yyleng, LD_K);
+"--zero"                 F_RETURN(ZERO_COUNTER, &line, yytext, yyleng, LD_K);
+
+        /* builtin chains */
+"INPUT"                  F_RETURN(INPUT, &line, yytext, yyleng, LD_K);
+"FORWARD"                F_RETURN(FORWARD, &line, yytext, yyleng, LD_K);
+"OUTPUT"                 F_RETURN(OUTPUT, &line, yytext, yyleng, LD_K);
+"PREROUTING"             F_RETURN(PREROUTING, &line, yytext, yyleng, LD_K);
+"POSTROUTING"            F_RETURN(POSTROUTING, &line, yytext, yyleng, LD_K);
+
+        /* parameter options */
+"-p"                     F_RETURN(PROTOCOL_OPT, &line, yytext, yyleng, LD_K);
+"--protocol"             F_RETURN(PROTOCOL_OPT, &line, yytext, yyleng, LD_K);
+"-s"                     F_RETURN(SOURCE_OPT, &line, yytext, yyleng, LD_K);
+"--source"               F_RETURN(SOURCE_OPT, &line, yytext, yyleng, LD_K);
+"--src"                  F_RETURN(SOURCE_OPT, &line, yytext, yyleng, LD_K);
+"-d"                     F_RETURN(DESTINATION_OPT, &line, yytext, yyleng, LD_K);
+"--destination"          F_RETURN(DESTINATION_OPT, &line, yytext, yyleng, LD_K);
+"--dst"                  F_RETURN(DESTINATION_OPT, &line, yytext, yyleng, LD_K);
+"-i"                     F_RETURN(IN_INTERFACE_OPT, &line, yytext, yyleng, LD_K);
+"--in-interface"         F_RETURN(IN_INTERFACE_OPT, &line, yytext, yyleng, LD_K);
+"-o"                     F_RETURN(OUT_INTERFACE_OPT, &line, yytext, yyleng, LD_K);
+"--out-interface"        F_RETURN(OUT_INTERFACE_OPT, &line, yytext, yyleng, LD_K);
+"-f"                     F_RETURN(FRAGMENT_OPT, &line, yytext, yyleng, LD_K);
+"--fragment"             F_RETURN(FRAGMENT_OPT, &line, yytext, yyleng, LD_K);
+"-c"                     F_RETURN(SET_COUNT_OPT, &line, yytext, yyleng, LD_K);
+"--set-counters"         F_RETURN(SET_COUNT_OPT, &line, yytext, yyleng, LD_K);
+
+
+        /* protocol names - except tcp udp - see below */
+"udplite"                F_RETURN(udplite, &line, yytext, yyleng, LD_K);
+"esp"                    F_RETURN(esp, &line, yytext, yyleng, LD_K);
+"sctp"                   F_RETURN(sctp, &line, yytext, yyleng, LD_K);
+"ah"                     F_RETURN(ah, &line, yytext, yyleng, LD_K);
+"mh"                     F_RETURN(mh, &line, yytext, yyleng, LD_K);
+"all"                    F_RETURN(all, &line, yytext, yyleng, LD_K);
+
+
+        /* general module options */
+"-m"                     F_RETURN(MODULE, &line, yytext, yyleng, LD_K);
+"--match"                F_RETURN(MODULE, &line, yytext, yyleng, LD_K);
+
+
+        /* module names */
+"conntrack"              F_RETURN(conntrack, &line, yytext, yyleng, LD_K);
+"connmark"               F_RETURN(connmark, &line, yytext, yyleng, LD_K);
+"icmp"                   F_RETURN(icmp, &line, yytext, yyleng, LD_K);
+"iprange"                F_RETURN(iprange, &line, yytext, yyleng, LD_K);
+"mark"                   F_RETURN(mark, &line, yytext, yyleng, LD_K);
+"multiport"              F_RETURN(multiport, &line, yytext, yyleng, LD_K);
+"state"                  F_RETURN(state, &line, yytext, yyleng, LD_K);
+"tcp"                    F_RETURN(tcp, &line, yytext, yyleng, LD_K);
+"udp"                    F_RETURN(udp, &line, yytext, yyleng, LD_K);
+
+
+        /* module connmark options */
+"--mark"                 F_RETURN(MARK_OPT, &line, yytext, yyleng, LD_K);
+
+
+        /* module conntrack options */
+"--ctstate"              F_RETURN(CTSTATE, &line, yytext, yyleng, LD_K);
+"--ctstatus"             F_RETURN(CTSTATUS, &line, yytext, yyleng, LD_K);
+
+
+        /* module conntrack ctstate and module state states*/
+"INVALID"                F_RETURN(INVALID, &line, yytext, yyleng, LD_K);
+"NEW"                    F_RETURN(NEW, &line, yytext, yyleng, LD_K);
+"ESTABLISHED"            F_RETURN(ESTABLISHED, &line, yytext, yyleng, LD_K);
+"RELATED"                F_RETURN(RELATED, &line, yytext, yyleng, LD_K);
+"UNTRACKED"              F_RETURN(UNTRACKED, &line, yytext, yyleng, LD_K);
+
+
+        /* module conntrack ctstate specific states */
+"DNAT"                   F_RETURN(DNAT, &line, yytext, yyleng, LD_K);
+"SNAT"                   F_RETURN(SNAT, &line, yytext, yyleng, LD_K);
+
+
+        /* module conntrack ctstatus states */
+"NONE"                   F_RETURN(NONE, &line, yytext, yyleng, LD_K);
+"EXPECTED"               F_RETURN(EXPECTED, &line, yytext, yyleng, LD_K);
+"SEEN_REPLY"             F_RETURN(SEEN_REPLY, &line, yytext, yyleng, LD_K);
+"ASSURED"                F_RETURN(ASSURED, &line, yytext, yyleng, LD_K);
+"CONFIRMED"              F_RETURN(CONFIRMED, &line, yytext, yyleng, LD_K);
+
+
+        /* module icmp options */
+"--icmp-type"            F_RETURN(ICMP_TYPE, &line, yytext, yyleng, LD_K);
+
+
+        /* module iprange oprions */
+"--src-range"            F_RETURN(SRC_RANGE, &line, yytext, yyleng, LD_K);
+"--dst-range"            F_RETURN(DST_RANGE, &line, yytext, yyleng, LD_K);
+
+
+        /* module mark options except --mark - see above */
+
+
+        /* module multiport options */
+"--sports"               F_RETURN(SPORTS, &line, yytext, yyleng, LD_K);
+"--source-ports"         F_RETURN(SPORTS, &line, yytext, yyleng, LD_K);
+"--dports"               F_RETURN(DPORTS, &line, yytext, yyleng, LD_K);
+"--destination-ports"    F_RETURN(DPORTS, &line, yytext, yyleng, LD_K);
+"--ports"                F_RETURN(PORTS, &line, yytext, yyleng, LD_K);
+
+
+        /* module state options */
+"--state"                F_RETURN(STATE_OPT, &line, yytext, yyleng, LD_K);
+
+
+        /* module tcp options - also udp options the first four ones*/
+"--sport"                F_RETURN(SPORT, &line, yytext, yyleng, LD_K);
+"--source-port"          F_RETURN(SPORT, &line, yytext, yyleng, LD_K);
+"--dport"                F_RETURN(DPORT, &line, yytext, yyleng, LD_K);
+"--destination-port"     F_RETURN(DPORT, &line, yytext, yyleng, LD_K);
+"--tcp-flags"            F_RETURN(TCP_FLAGS, &line, yytext, yyleng, LD_K);
+"--syn"                  F_RETURN(SYN_OPT, &line, yytext, yyleng, LD_K);
+"--tcp-option"           F_RETURN(TCP_OPTION, &line, yytext, yyleng, LD_K);
+
+
+        /* module tcp option tcp-flags values except NONE - see above */
+"SYN"                    F_RETURN(SYN, &line, yytext, yyleng, LD_K);
+"ACK"                    F_RETURN(ACK, &line, yytext, yyleng, LD_K);
+"FIN"                    F_RETURN(FIN, &line, yytext, yyleng, LD_K);
+"RST"                    F_RETURN(RST, &line, yytext, yyleng, LD_K);
+"URG"                    F_RETURN(URG, &line, yytext, yyleng, LD_K);
+"PSH"                    F_RETURN(PSH, &line, yytext, yyleng, LD_K);
+"ALL"                    F_RETURN(ALL, &line, yytext, yyleng, LD_K);
+
+
+        /* general target options */
+"-j"                     F_RETURN(ACTION_J, &line, yytext, yyleng, LD_K);
+"--jump"                 F_RETURN(ACTION_J, &line, yytext, yyleng, LD_K);
+"-g"                     F_RETURN(ACTION_G, &line, yytext, yyleng, LD_K);
+"--goto"                 F_RETURN(ACTION_G, &line, yytext, yyleng, LD_K);
+
+
+        /* native target names */
+"ACCEPT"                 F_RETURN(ACCEPT, &line, yytext, yyleng, LD_K);
+"DROP"                   F_RETURN(DROP, &line, yytext, yyleng, LD_K);
+"RETURN"                 F_RETURN(RETURN, &line, yytext, yyleng, LD_K);
+
+
+        /* extended target names - except DNAT and SNAT - see above */
+"CONNMARK"               F_RETURN(CONNMARK, &line, yytext, yyleng, LD_K);
+"MARK"                   F_RETURN(MARK, &line, yytext, yyleng, LD_K);
+"MASQUERADE"             F_RETURN(MASQUERADE, &line, yytext, yyleng, LD_K);
+"REDIRECT"               F_RETURN(REDIRECT, &line, yytext, yyleng, LD_K);
+"REJECT"                 F_RETURN(REJECT_SYM, &line, yytext, yyleng, LD_K);
+
+
+        /* target CONNMARK options */
+"--set-xmark"            F_RETURN(SET_XMARK, &line, yytext, yyleng, LD_K);
+"--save-mark"            F_RETURN(SAVE_MARK, &line, yytext, yyleng, LD_K);
+"--restore-mark"         F_RETURN(RESTORE_MARK, &line, yytext, yyleng, LD_K);
+"--and-mark"             F_RETURN(AND_MARK, &line, yytext, yyleng, LD_K);
+"--or-mark"              F_RETURN(OR_MARK, &line, yytext, yyleng, LD_K);
+"--xor-mark"             F_RETURN(XOR_MARK, &line, yytext, yyleng, LD_K);
+"--set-mark"             F_RETURN(SET_MARK, &line, yytext, yyleng, LD_K);
+
+
+        /* target CONNMARK - options --save-mark, --restore-make suboptions */
+"--mask"                 F_RETURN(MASK, &line, yytext, yyleng, LD_K);
+"--nfmask"               F_RETURN(NFMASK, &line, yytext, yyleng, LD_K);
+"--ctmask"               F_RETURN(CTMASK, &line, yytext, yyleng, LD_K);
+
+
+        /* target DNAT options */
+"--to-destination"       F_RETURN(TO_DST, &line, yytext, yyleng, LD_K);
+"--random"               F_RETURN(RANDOM, &line, yytext, yyleng, LD_K); 
+"--persistent"           F_RETURN(PERSISTENT, &line, yytext, yyleng, LD_K); 
+
+
+        /* target MARK options: --set-xmark --set-mark --and-mark --or-mark --xor-mark - see above */
+
+
+        /* target MASQUERADE options - except --random - see above */
+"--to-ports"             F_RETURN(TO_PORTS, &line, yytext, yyleng, LD_K);   
+"--random-fully"         F_RETURN(RANDOM_FULLY, &line, yytext, yyleng, LD_K);   
+
+
+        /* target REDIRECT options: --random  --to-ports - see above */
+
+
+        /* target REJECT options */
+"--reject-with"          F_RETURN(REJECT_WITH, &line, yytext, yyleng, LD_K);
+
+        /* target REJECT types */
+"icmp-net-unreachable"   F_RETURN(ICMP_NET_UR, &line, yytext, yyleng, LD_K);
+"icmp-host-unreachable"  F_RETURN(ICMP_HOST_UR, &line, yytext, yyleng, LD_K);
+"icmp-port-unreachable"  F_RETURN(ICMP_PORT_UR, &line, yytext, yyleng, LD_K);
+"icmp-proto-unreachable" F_RETURN(ICMP_PROTO_UR, &line, yytext, yyleng, LD_K);
+"icmp-net-prohibited"    F_RETURN(ICMP_NET_PRO, &line, yytext, yyleng, LD_K);
+"icmp-host-prohibited"   F_RETURN(ICMP_HOST_PRO, &line, yytext, yyleng, LD_K);
+"icmp-admin-prohibited"  F_RETURN(ICMP_ADM_PRO, &line, yytext, yyleng, LD_K);
+
+
+        /* target SNAT options except --random --random-fully --persistent - see above */
+"--to-source"            F_RETURN(TO_SRC, &line, yytext, yyleng, LD_K);
+
+{MAC_ADDRESS}            F_RETURN(MAC_ADDRESS, &line, yytext, yyleng, LD_V);
+{IP_ADDRESS}             F_RETURN(IP_ADDRESS, &line, yytext, yyleng, LD_V);
+{IDENTIFIER}             F_RETURN(IDENTIFIER, &line, yytext, yyleng, LD_V);
+{EXT_IDENTIFIER}         F_RETURN(EXT_IDENTIFIER, &line, yytext, yyleng, LD_V);
+{TLD_IDENTIFIER}         F_RETURN(TLD_IDENTIFIER, &line, yytext, yyleng, LD_V);
+{NET_IDENTIFIER}         F_RETURN(NET_IDENTIFIER, &line, yytext, yyleng, LD_V);
+{INTEGER}                F_RETURN(INTEGER, &line, yytext, yyleng, LD_V);
+{HEX}                    F_RETURN(HEX, &line, yytext, yyleng, LD_V);
+
+[ \t]+        {
+            TOK_CAT( &line, yytext, yyleng );
+            /* fprintf(stderr, "[ \\t]+: [%s] %s\n", yytext, ((&line)->lv)[(&line)->ln] ); */
+}
+
+[\r\n]        {
+            TOK_CAT( &line, "", 0 );
+            line.n = 0;
+            line.m = 0;
+            line.ln++;
+            /* fprintf(stderr, "[\\r\\n]: [%s] %s\n", yytext, ((&line)->lv)[(&line)->ln] ); */
+}
+
+"#".*         {
+            TOK_CAT( &line, yytext, yyleng );
+            /* fprintf(stderr, "#: [%s] %s\n", yytext, ((&line)->lv)[(&line)->ln] ); */
+}
+
+"/*"          {
+            BEGIN(comment);
+            TOK_CAT( &line, yytext, yyleng );
+}
+
+<comment>[^*\n]*  {
+            TOK_CAT( &line, yytext, yyleng );
+}
+
+<comment>"*"+[^*/\n]* {
+            TOK_CAT( &line, yytext, yyleng );
+}
+
+<comment>[\n\r]   {
+            TOK_CAT( &line, "", 0 );
+            line.n = 0;
+            line.m = 0;
+            line.ln++;
+}
+
+<comment>"*"+"/"  {
+            BEGIN(INITIAL);
+            TOK_CAT( &line, yytext, yyleng );
+}
+
+.         { /* skip unmatched patterns */ printf("SCANNER ERROR: %s\n", yytext);exit(0);/* } */
+            TOK_CAT( &line, yytext, yyleng );
+}
+
+%%
+
+#endif /* __LANG_FLEX */
