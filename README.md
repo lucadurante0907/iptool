@@ -1,1 +1,1 @@
-Source code for a simple IPTABLEs parser
+Source code for a simple IPTABLES parser
